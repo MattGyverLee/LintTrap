@@ -1,0 +1,21 @@
+# Build output
+/target
+**/*.rs.bk
+*.pdb
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Test files from `linttrap-cli rules check`
+reply.md
+*.reply.md

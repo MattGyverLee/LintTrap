@@ -1,0 +1,621 @@
+# LintTrap built-in rules.
+#
+# Override or extend these in %APPDATA%\LintTrap\rules.toml. A rule there with the same `id`
+# replaces the built-in one; `enabled = false` turns a rule off; new ids are added.
+#
+# Fields
+#   id          unique id (used on the command line: linttrap-cli clean --rules uv-cache,npm-cache)
+#   title       short name shown in the list
+#   safety      safe   = regenerated automatically, ticked by default
+#               review = probably junk, never ticked by default
+#               move   = real data that belongs on another drive (report only). The drive shown is the one
+#                        with the most free space (move_to in locations.toml)
+#               info   = leave alone or use a Windows tool (report only)
+#   action      contents = delete everything inside each path (the folder itself stays)
+#               whole    = delete each path itself (file or folder)
+#               versions = inside each path, delete version-numbered folders except the newest `keep`
+#                          (per name: IdeaIC2024.3 is only compared with other IdeaIC folders)
+#               drivers  = older versions of third-party drivers, removed with pnputil (paths is just
+#                          the driver store, for display)
+#               none     = report only
+#   paths       Windows paths; %ENV% variables are expanded and a segment may contain * or ? wildcards.
+#               A path starting with *: is looked for on every fixed drive ('*:\temp')
+#   min_age_days  only delete files last modified more than this many days ago
+#   keep        (versions) how many of the newest versions to keep. Default 1.
+#   prefix      (versions) only consider folders whose name starts with this, e.g. "app-"
+#   processes   if any of these are running, the rule is skipped (cleaning a live profile can corrupt it)
+#   admin       needs an elevated (administrator) LintTrap to clean, and runs `command` elevated
+#   command     the tool's own cleanup command (a cmd.exe command line); the GUI offers to run it
+#   use_command Clean runs `command` (hidden, no prompts) instead of deleting files. If its program is
+#               not installed, or a path of the rule was dismissed, Clean deletes files instead
+#               (or, with action = none, cannot clean)
+#   per_path    run `command` once inside each found path (for tools that pick their folder by drive)
+#   prevent     how to stop it coming back
+#   note        one line of advice
+#   beside      only paths whose folder also holds an entry with this name (e.g. GPUCache, which marks a
+#               Chromium profile, so a plain "Cache" folder of some other program is not taken)
+#   catch_all   only paths no other rule found: a general rule for what the specific ones miss
+#   locate      a command that prints where the tool keeps this folder (e.g. "uv cache dir"). Asked on the
+#               first run; the answers are saved in %APPDATA%\LintTrap\locations.toml and added to `paths`
+#
+# In title, note and prevent, %MOVE_TO% is the drive "move" items should go to (e.g. D:). With no such
+# drive, a prevent that uses it is not shown.
+#
+# Paths that only exist on one PC belong in your own rules.toml or in locations.toml, not here.
+
+# ---------------------------------------------------------------- package and build caches
+
+[[rule]]
+id = "uv-cache"
+title = "uv package cache"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\uv\cache', '%UV_CACHE_DIR%']
+locate = "uv cache dir"
+processes = ["uv.exe", "uvx.exe"]
+command = "uv cache clean"
+use_command = true
+prevent = 'setx UV_CACHE_DIR %MOVE_TO%\Caches\uv'
+note = "Rebuilt on demand. Point UV_CACHE_DIR at %MOVE_TO% so it stops growing on the system drive."
+
+[[rule]]
+id = "npm-cache"
+title = "npm cache"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\npm-cache', '%npm_config_cache%']
+locate = "npm config get cache"
+processes = ["npm.exe"]
+command = "npm cache clean --force"
+use_command = true
+prevent = 'npm config set cache %MOVE_TO%\Caches\npm --global'
+note = "npx keeps its packages here too; they re-download when needed."
+
+[[rule]]
+id = "pip-cache"
+title = "pip cache"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\pip\cache', '%PIP_CACHE_DIR%']
+locate = "pip cache dir"
+command = "pip cache purge"
+use_command = true
+
+[[rule]]
+id = "nuget-http-cache"
+title = "NuGet HTTP cache"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\NuGet\v3-cache', '%NUGET_HTTP_CACHE_PATH%']
+locate = "dotnet nuget locals http-cache --list"
+command = "dotnet nuget locals http-cache --clear"
+use_command = true
+
+[[rule]]
+id = "nuget-packages"
+title = "NuGet global packages"
+safety = "review"
+action = "contents"
+paths = ['%USERPROFILE%\.nuget\packages', '%NUGET_PACKAGES%']
+locate = "dotnet nuget locals global-packages --list"
+processes = ["devenv.exe", "dotnet.exe", "MSBuild.exe"]
+command = "dotnet nuget locals global-packages --clear"
+use_command = true
+note = "Every .NET project restores from here; packages re-download on the next build."
+
+[[rule]]
+id = "gradle-caches"
+title = "Gradle caches"
+safety = "review"
+action = "contents"
+paths = ['%USERPROFILE%\.gradle\caches', '%GRADLE_USER_HOME%\caches']
+processes = ["java.exe", "idea64.exe", "studio64.exe"]
+note = "Re-downloaded on the next Gradle build."
+
+[[rule]]
+id = "bun-cache"
+title = "Bun install cache"
+safety = "safe"
+action = "contents"
+paths = ['%USERPROFILE%\.bun\install\cache']
+processes = ["bun.exe"]
+command = "bun pm cache rm"
+use_command = true
+
+[[rule]]
+id = "yarn-cache"
+title = "Yarn cache"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\Yarn\Cache', '%YARN_CACHE_FOLDER%']
+command = "yarn cache clean"
+
+[[rule]]
+id = "playwright-browsers"
+title = "Playwright test browsers"
+safety = "review"
+action = "contents"
+paths = ['%LOCALAPPDATA%\ms-playwright', '%PLAYWRIGHT_BROWSERS_PATH%']
+command = "npx playwright uninstall --all"
+note = "Reinstall with npx playwright install when you next run browser tests."
+
+[[rule]]
+id = "cypress-cache"
+title = "Cypress binary cache"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\Cypress\Cache', '%CYPRESS_CACHE_FOLDER%']
+command = "npx cypress cache clear"
+
+[[rule]]
+id = "electron-cache"
+title = "Electron download cache"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\electron\Cache']
+
+[[rule]]
+id = "go-build-cache"
+title = "Go build cache"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\go-build', '%GOCACHE%']
+locate = "go env GOCACHE"
+processes = ["go.exe"]
+command = "go clean -cache"
+use_command = true
+note = "Rebuilt on the next go build."
+
+[[rule]]
+id = "cargo-registry"
+title = "Cargo downloaded crates"
+safety = "review"
+action = "contents"
+paths = ['%USERPROFILE%\.cargo\registry\cache', '%USERPROFILE%\.cargo\registry\src', '%CARGO_HOME%\registry\cache', '%CARGO_HOME%\registry\src']
+processes = ["cargo.exe", "rust-analyzer.exe"]
+note = "Re-downloaded on the next cargo build; offline builds fail until then."
+
+[[rule]]
+id = "maven-repo"
+title = "Maven local repository"
+safety = "review"
+action = "contents"
+paths = ['%USERPROFILE%\.m2\repository']
+processes = ["java.exe", "mvn.exe", "idea64.exe"]
+note = "Re-downloaded on the next Maven build; offline builds fail until then."
+
+[[rule]]
+id = "vscode-vsix"
+title = "VS Code extension installers"
+safety = "safe"
+action = "contents"
+paths = ['%APPDATA%\Code\CachedExtensionVSIXs']
+note = "Downloaded .vsix copies of extensions that are already installed."
+
+[[rule]]
+id = "user-dot-cache"
+title = "Shared tool cache (.cache)"
+safety = "review"
+action = "none"
+paths = ['%USERPROFILE%\.cache']
+note = "Hugging Face, pre-commit and other tools keep caches here. Look inside before deleting."
+
+# ---------------------------------------------------------------- temp, dumps, leftovers
+
+[[rule]]
+id = "user-temp"
+title = "Your temp folder"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\Temp']
+min_age_days = 2
+note = "Only files older than 2 days, so running programs are not affected."
+
+[[rule]]
+id = "windows-temp"
+title = "Windows temp folders"
+safety = "safe"
+action = "contents"
+paths = ['%SystemRoot%\Temp', '%SystemRoot%\SystemTemp']
+min_age_days = 2
+admin = true
+
+[[rule]]
+id = "squirrel-temp"
+title = "Installer leftovers (SquirrelTemp)"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\SquirrelTemp']
+min_age_days = 1
+note = "Left behind by app installers such as Slack, GitHub Desktop and GitKraken."
+
+[[rule]]
+id = "crash-dumps"
+title = "Crash dumps and error reports"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\CrashDumps', '%ProgramData%\Microsoft\Windows\WER\ReportArchive', '%ProgramData%\Microsoft\Windows\WER\ReportQueue', '%SystemRoot%\Minidump']
+admin = true
+
+[[rule]]
+id = "windows-logs"
+title = "Old Windows servicing and update logs"
+safety = "safe"
+action = "contents"
+paths = ['%SystemRoot%\Logs\CBS', '%SystemRoot%\Logs\DISM', '%SystemRoot%\Logs\WindowsUpdate', '%SystemRoot%\Logs\waasmedic', '%SystemRoot%\Logs\SIH', '%ProgramData%\USOShared\Logs']
+min_age_days = 14
+admin = true
+note = "Only logs older than two weeks; the ones Windows is writing are kept."
+
+[[rule]]
+id = "delivery-optimization"
+title = "Delivery Optimization cache"
+safety = "safe"
+action = "contents"
+paths = ['%SystemRoot%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache']
+admin = true
+command = "powershell -NoProfile -Command Delete-DeliveryOptimizationCache -Force"
+use_command = true
+note = "Windows Update's peer-sharing cache."
+
+[[rule]]
+id = "windows-update-downloads"
+title = "Windows Update downloads"
+safety = "safe"
+action = "contents"
+paths = ['%SystemRoot%\SoftwareDistribution\Download']
+min_age_days = 7
+admin = true
+note = "Update files that are already installed. Only files older than a week."
+
+[[rule]]
+id = "driver-extracts"
+title = "Extracted driver installers"
+safety = "safe"
+action = "contents"
+paths = ['%SystemDrive%\DRIVER', '%SystemDrive%\SWSetup', '%SystemDrive%\NVIDIA', '%SystemDrive%\AMD', '%SystemDrive%\Intel\Logs']
+admin = true
+note = "Driver setup files that were unpacked here. The drivers themselves are already installed."
+
+[[rule]]
+id = "nvidia-downloader"
+title = "NVIDIA driver downloads"
+safety = "safe"
+action = "contents"
+paths = ['%ProgramData%\NVIDIA Corporation\Downloader']
+admin = true
+
+[[rule]]
+id = "old-drivers"
+title = "Old driver versions"
+safety = "safe"
+action = "drivers"
+paths = ['%SystemRoot%\System32\DriverStore\FileRepository']
+admin = true
+keep = 1
+note = "Older copies of drivers whose newer version is installed. Removed with pnputil, which refuses any driver a device still uses; printer drivers are left alone. Removing them takes away Device Manager's Roll Back Driver; set keep = 2 to keep one fallback."
+
+[[rule]]
+id = "nvidia-shader-cache"
+title = "Graphics shader caches"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\NVIDIA\DXCache', '%LOCALAPPDATA%\NVIDIA\GLCache', '%LOCALAPPDATA%\D3DSCache', '%LOCALAPPDATA%\AMD\DxCache']
+note = "Rebuilt automatically. Games may stutter briefly the first time."
+
+[[rule]]
+id = "fieldworks-updates"
+title = "FieldWorks update installers"
+safety = "safe"
+action = "contents"
+paths = ['%ProgramData%\SIL\FieldWorks\DownloadedUpdates']
+admin = true
+
+[[rule]]
+id = "plex-updates"
+title = "Plex update downloads"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\Plex\cache\updates', '%LOCALAPPDATA%\Plex Media Server\Updates']
+
+# ---------------------------------------------------------------- logs
+
+[[rule]]
+id = "app-logs"
+title = "Oversized app logs"
+safety = "safe"
+action = "contents"
+paths = ['%LOCALAPPDATA%\Brother\iPS\Logs', '%USERPROFILE%\.happy\logs']
+min_age_days = 1
+
+[[rule]]
+id = "norton-trace"
+title = "Norton performance traces"
+safety = "review"
+action = "whole"
+paths = ['%ProgramData%\Norton\Antivirus\log\wpr_record_*.etl']
+admin = true
+note = "Norton's tamper protection may refuse the delete."
+
+# ---------------------------------------------------------------- old app versions
+
+[[rule]]
+id = "squirrel-old-versions"
+title = "Old app versions (Squirrel installers)"
+safety = "safe"
+action = "versions"
+prefix = "app-"
+keep = 1
+paths = ['%LOCALAPPDATA%\gitkraken', '%LOCALAPPDATA%\GitHubDesktop', '%LOCALAPPDATA%\slack', '%LOCALAPPDATA%\Discord', '%LOCALAPPDATA%\Postman', '%LOCALAPPDATA%\Microsoft\Teams']
+note = "Each app keeps its previous version beside the new one after updating."
+
+[[rule]]
+id = "jetbrains-old"
+title = "Old JetBrains IDE settings and caches"
+safety = "review"
+action = "versions"
+keep = 1
+paths = ['%APPDATA%\JetBrains', '%LOCALAPPDATA%\JetBrains']
+processes = ["idea64.exe", "pycharm64.exe", "webstorm64.exe", "rider64.exe", "clion64.exe", "goland64.exe", "datagrip64.exe", "rustrover64.exe", "phpstorm64.exe", "studio64.exe"]
+note = "Each IDE keeps the folders of every version it was upgraded from; only the newest per IDE is kept. Review: if you still run an older version side by side, its settings would reset."
+
+[[rule]]
+id = "chromium-old-versions"
+title = "Previous browser version"
+safety = "review"
+action = "none"
+paths = ['%ProgramFiles(x86)%\Microsoft\Edge\Application', '%ProgramFiles(x86)%\Microsoft\EdgeCore']
+note = "Edge removes its previous version itself after the next restart. Not cleaned here: until that restart Edge still loads the old version, and deleting it would break the browser."
+
+# ---------------------------------------------------------------- browsers
+
+[[rule]]
+id = "chrome-ai-model"
+title = "Chrome Gemini Nano AI model"
+safety = "review"
+action = "whole"
+paths = ['%LOCALAPPDATA%\Google\Chrome\User Data\OptGuideOnDeviceModel']
+processes = ["chrome.exe"]
+prevent = 'reg add HKLM\SOFTWARE\Policies\Google\Chrome /v GenAILocalFoundationalModelSettings /t REG_DWORD /d 1 /f'
+note = "About 4 GB. Chrome re-downloads it unless the policy in 'prevent' is set (needs admin)."
+
+[[rule]]
+id = "edge-ai-model"
+title = "Edge on-device AI model"
+safety = "review"
+action = "whole"
+paths = ['%LOCALAPPDATA%\Microsoft\Edge\User Data\EdgeLLMOnDeviceModel', '%LOCALAPPDATA%\Microsoft\Edge\User Data\OptGuideOnDeviceModel']
+processes = ["msedge.exe"]
+prevent = 'reg add HKLM\SOFTWARE\Policies\Microsoft\Edge /v GenAILocalFoundationalModelSettings /t REG_DWORD /d 1 /f'
+
+[[rule]]
+id = "brave-ai-model"
+title = "Brave on-device AI model"
+safety = "review"
+action = "whole"
+paths = ['%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\OptGuideOnDeviceModel']
+processes = ["brave.exe"]
+
+[[rule]]
+id = "browser-sw-cache"
+title = "Browser offline storage for web apps"
+safety = "review"
+action = "contents"
+paths = [
+  '%LOCALAPPDATA%\Google\Chrome\User Data\*\Service Worker\CacheStorage',
+  '%LOCALAPPDATA%\Microsoft\Edge\User Data\*\Service Worker\CacheStorage',
+  '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\Service Worker\CacheStorage',
+]
+processes = ["chrome.exe", "msedge.exe", "brave.exe"]
+note = "Offline copies kept by web apps (Outlook, Teams, YouTube ...). They re-download; offline use is lost until then."
+
+[[rule]]
+id = "browser-cache"
+title = "Browser caches"
+safety = "safe"
+action = "contents"
+paths = [
+  '%LOCALAPPDATA%\Google\Chrome\User Data\*\Cache',
+  '%LOCALAPPDATA%\Google\Chrome\User Data\*\Code Cache',
+  '%LOCALAPPDATA%\Google\Chrome\User Data\*\GPUCache',
+  '%LOCALAPPDATA%\Microsoft\Edge\User Data\*\Cache',
+  '%LOCALAPPDATA%\Microsoft\Edge\User Data\*\Code Cache',
+  '%LOCALAPPDATA%\Microsoft\Edge\User Data\*\GPUCache',
+  '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\Cache',
+  '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\Code Cache',
+  '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\*\GPUCache',
+]
+processes = ["chrome.exe", "msedge.exe", "brave.exe"]
+note = "Skipped while any of these browsers is open."
+
+[[rule]]
+id = "app-web-caches"
+title = "Web caches of other apps and browsers"
+safety = "review"
+action = "contents"
+paths = [
+  '%APPDATA%\*\Cache', '%APPDATA%\*\Code Cache', '%APPDATA%\*\GPUCache', '%APPDATA%\*\Dawn*Cache', '%APPDATA%\*\GrShaderCache', '%APPDATA%\*\CachedData',
+  '%APPDATA%\*\*\Cache', '%APPDATA%\*\*\Code Cache', '%APPDATA%\*\*\GPUCache', '%APPDATA%\*\*\Dawn*Cache', '%APPDATA%\*\*\GrShaderCache',
+  '%LOCALAPPDATA%\*\Cache', '%LOCALAPPDATA%\*\Code Cache', '%LOCALAPPDATA%\*\GPUCache', '%LOCALAPPDATA%\*\Dawn*Cache', '%LOCALAPPDATA%\*\GrShaderCache',
+  '%LOCALAPPDATA%\*\*\Cache', '%LOCALAPPDATA%\*\*\Code Cache', '%LOCALAPPDATA%\*\*\GPUCache', '%LOCALAPPDATA%\*\*\Dawn*Cache', '%LOCALAPPDATA%\*\*\GrShaderCache',
+  '%LOCALAPPDATA%\*\User Data\*\Cache', '%LOCALAPPDATA%\*\User Data\*\Code Cache', '%LOCALAPPDATA%\*\User Data\*\GPUCache',
+  '%LOCALAPPDATA%\*\*\User Data\*\Cache', '%LOCALAPPDATA%\*\*\User Data\*\Code Cache', '%LOCALAPPDATA%\*\*\User Data\*\GPUCache',
+]
+beside = "GPUCache"
+catch_all = true
+note = "Caches of apps built on Chromium (Slack, VS Code, Discord, Obsidian ...) and of other Chromium browsers. Rebuilt as they run; best cleaned with those apps closed."
+
+# ---------------------------------------------------------------- other apps
+
+[[rule]]
+id = "claude-plugin-cache"
+title = "Claude Code plugin cache"
+safety = "review"
+action = "contents"
+paths = ['%USERPROFILE%\.claude\plugins\cache']
+processes = ["claude.exe"]
+note = "Plugins are re-fetched when Claude Code next starts."
+
+[[rule]]
+id = "picasa"
+title = "Picasa database"
+safety = "review"
+action = "whole"
+paths = ['%LOCALAPPDATA%\Google\Picasa2']
+note = "Picasa was discontinued in 2016. Delete if you no longer open it."
+
+[[rule]]
+id = "onedrive-listsync"
+title = "OneDrive Lists sync cache"
+safety = "review"
+action = "contents"
+paths = ['%LOCALAPPDATA%\Microsoft\OneDrive\ListSync']
+processes = ["OneDrive.exe", "Microsoft.SharePoint.exe"]
+
+[[rule]]
+id = "google-earth-vr"
+title = "Google Earth VR cache"
+safety = "review"
+action = "contents"
+paths = ['%ProgramData%\Google\VR\Earth\earthdata']
+admin = true
+
+# ---------------------------------------------------------------- real data that belongs on another drive
+
+[[rule]]
+id = "docker-disk"
+title = "Docker disk image"
+safety = "move"
+action = "none"
+paths = ['%LOCALAPPDATA%\Docker\wsl']
+note = "Docker Desktop > Settings > Resources > Advanced > Disk image location."
+
+[[rule]]
+id = "downloads"
+title = "Downloads folder"
+safety = "move"
+action = "none"
+paths = ['%USERPROFILE%\Downloads']
+note = "Right-click Downloads > Properties > Location > Move."
+
+[[rule]]
+id = "videos"
+title = "Videos folder"
+safety = "move"
+action = "none"
+paths = ['%USERPROFILE%\Videos']
+note = "Right-click Videos > Properties > Location > Move."
+
+[[rule]]
+id = "ollama-models"
+title = "Ollama models"
+safety = "move"
+action = "none"
+paths = ['%USERPROFILE%\.ollama\models', '%OLLAMA_MODELS%']
+note = "Set OLLAMA_MODELS to a folder on %MOVE_TO%, quit Ollama, and move the models there."
+
+[[rule]]
+id = "steam-on-c"
+title = "Steam library on C:"
+safety = "move"
+action = "none"
+paths = ['%ProgramFiles(x86)%\Steam\steamapps']
+note = "Steam > Settings > Storage: add a library on %MOVE_TO% and move games to it."
+
+[[rule]]
+id = "fieldworks-projects"
+title = "FieldWorks projects"
+safety = "move"
+action = "none"
+paths = ['%ProgramData%\SIL\FieldWorks\Projects']
+note = "FieldWorks > Tools > Options > Projects folder."
+
+# ---------------------------------------------------------------- leave alone
+
+[[rule]]
+id = "hiberfil"
+title = "Hibernation file"
+safety = "info"
+action = "none"
+paths = ['%SystemDrive%\hiberfil.sys']
+admin = true
+command = "powercfg /h /type reduced"
+note = "Reduced keeps fast startup and shrinks the file; powercfg /h off removes it but disables hibernate."
+
+[[rule]]
+id = "winsxs"
+title = "Windows component store"
+safety = "info"
+action = "none"
+paths = ['%SystemRoot%\WinSxS']
+admin = true
+command = "DISM /Online /Cleanup-Image /StartComponentCleanup"
+note = "Never delete by hand; use Run. Takes 5-20 minutes and can sit at one percentage for a while. Hard links make it look bigger than it is."
+
+[[rule]]
+id = "msi-patch-cache"
+title = "Windows Installer patch backups ($PatchCache$)"
+safety = "review"
+action = "contents"
+paths = ['%SystemRoot%\Installer\$PatchCache$']
+admin = true
+prevent = 'reg add HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer /v MaxPatchCacheSize /t REG_DWORD /d 0 /f'
+note = 'Backups of files that program patches replaced. Without them, removing a patch or repairing that program may ask for its original installer. Only this subfolder: the rest of C:\Windows\Installer must stay.'
+
+[[rule]]
+id = "windows-installer"
+title = "Windows Installer cache"
+safety = "info"
+action = "none"
+paths = ['%SystemRoot%\Installer', '%ProgramData%\Package Cache']
+note = "Needed to repair, update and uninstall programs. Never delete by hand."
+
+[[rule]]
+id = "claude-vm"
+title = "Claude desktop VM image"
+safety = "info"
+action = "none"
+paths = ['%APPDATA%\Claude\vm_bundles']
+note = "Used by Claude desktop's sandbox."
+
+# ---------------------------------------------------------------- every drive
+
+[[rule]]
+id = "wu-download-cache"
+title = "Windows Update download cache"
+safety = "safe"
+action = "contents"
+paths = ['*:\WUDownloadCache']
+min_age_days = 7
+admin = true
+note = "Windows Update's overflow folder on a second drive, used when the system drive is short of space."
+
+[[rule]]
+id = "root-temp"
+title = "Temp folders at drive roots"
+safety = "review"
+action = "contents"
+paths = ['*:\temp', '*:\tmp']
+min_age_days = 7
+
+[[rule]]
+id = "pnpm-store"
+title = "pnpm store"
+safety = "safe"
+action = "none"
+paths = ['*:\.pnpm-store', '%LOCALAPPDATA%\pnpm\store']
+locate = "pnpm store path"
+command = "pnpm store prune"
+use_command = true
+per_path = true
+note = "Prune removes only packages no project uses. Never delete the store by hand: it is hard-linked into node_modules, so that frees little and breaks pnpm's index."
+
+[[rule]]
+id = "conda-pkgs"
+title = "Conda package cache"
+safety = "safe"
+action = "none"
+paths = ['%USERPROFILE%\anaconda3\pkgs', '%USERPROFILE%\miniconda3\pkgs', '%USERPROFILE%\miniforge3\pkgs', '%ProgramData%\anaconda3\pkgs', '%ProgramData%\miniconda3\pkgs', '%USERPROFILE%\.conda\pkgs']
+locate = "conda config --show pkgs_dirs"
+command = "conda clean --all -y"
+use_command = true
