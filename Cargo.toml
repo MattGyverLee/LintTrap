@@ -3,6 +3,8 @@ name = "linttrap"
 version = "0.1.0"
 edition = "2024"
 description = "Disk space treemap and junk cleaner for Windows"
+license = "MIT"
+repository = "https://github.com/MattGyverLee/LintTrap"
 
 [dependencies]
 eframe = "0.37.0"

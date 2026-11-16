@@ -83,3 +83,7 @@ you before adding them.
 cargo build --release      # target\release\linttrap.exe (GUI) and linttrap-cli.exe
 cargo test --lib
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
