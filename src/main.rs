@@ -17,6 +17,9 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Room the mouse cursor takes below and right of the pointer, so tooltips start past it.
+const CURSOR: Vec2 = Vec2::new(16.0, 24.0);
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -839,7 +842,11 @@ impl App {
             let flagged = self.marks.contains_key(&c.node).then(|| {
                 self.results.iter().find(|r| !r.dismissed && r.found.iter().chain(r.candidates.iter().map(|c| &c.path)).any(|f| tree.find(f) == Some(c.node)))
             }).flatten();
-            resp.clone().on_hover_ui_at_pointer(|ui| {
+            // Anchor below the whole cursor, not its tip, so the arrow doesn't cover the folder name.
+            let pointer = resp.hover_pos().unwrap_or(c.rect.center());
+            let mut tip = egui::Tooltip::for_enabled(&resp);
+            tip.popup = tip.popup.anchor(Rect::from_min_size(pointer, CURSOR));
+            tip.show(|ui| {
                 ui.label(RichText::new(&*n.name).strong());
                 ui.label(RichText::new(path.display().to_string()).monospace().small());
                 ui.label(format!("{}  ·  {} files  ·  {:.1}% of parent", human(n.size), n.files, n.size as f64 * 100.0 / parent_size as f64));
