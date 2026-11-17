@@ -152,6 +152,20 @@ pub fn query(command: &str, timeout: std::time::Duration) -> Option<String> {
     run_hidden_output(command, timeout).ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+/// Run a program directly (no shell, no window) and return its standard output on exit code 0.
+pub fn output_hidden(program: &str, args: &[&str]) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 fn run_hidden_output(command: &str, timeout: std::time::Duration) -> Result<std::process::Output, String> {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};

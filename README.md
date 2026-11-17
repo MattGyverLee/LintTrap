@@ -54,6 +54,14 @@ On the first run LintTrap asks the installed tools where their caches are (`uv c
 are saved in `%APPDATA%\LintTrap\locations.toml`; edit it, or run `linttrap-cli locate` (or delete the file) to
 look again.
 
+A few rules search every drive at any depth (`*:\**\node_modules`), skipping Windows, Program Files,
+ProgramData, `.git` and cloud folders. They are all *Review*, so nothing is ticked:
+
+- `__pycache__` folders that hold only `.pyc` files git doesn't track. Python rebuilds them; set
+  `PYTHONPYCACHEPREFIX` to gather them in one folder (a *Safe* rule) so they stop coming back.
+- `node_modules` and Python venvs of git projects (not app clones in AppData or `.claude`-style folders) where nothing in the repo
+  has changed for 90 days. `npm install` or `uv sync` brings them back.
+
 Add or override rules in `%APPDATA%\LintTrap\rules.toml`; a rule with the same `id` replaces the built-in one,
 and `enabled = false` turns it off. Folders that only exist on your PC belong there.
 

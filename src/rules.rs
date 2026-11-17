@@ -88,9 +88,25 @@ pub struct Rule {
     /// A command that prints where the tool keeps this folder; asked once, saved in locations.toml.
     #[serde(default)]
     pub locate: Option<String>,
-    /// Only paths whose folder also holds an entry with this name (GPUCache marks a Chromium profile).
+    /// Only paths whose folder also holds an entry with one of these names (GPUCache marks a Chromium profile).
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub beside: Vec<String>,
+    /// Only paths that themselves hold an entry with this name (pyvenv.cfg marks a Python venv).
     #[serde(default)]
-    pub beside: Option<String>,
+    pub contains: Option<String>,
+    /// Only folders that hold nothing but files matching these patterns (no subfolders).
+    #[serde(default)]
+    pub only: Vec<String>,
+    /// Only paths inside a git work tree outside AppData and profile dot folders (your project, not an app's clone).
+    #[serde(default)]
+    pub in_repo: bool,
+    /// Leave out paths git tracks files in.
+    #[serde(default)]
+    pub untracked: bool,
+    /// Only paths whose project has had nothing changed for this many days: the whole repo with `in_repo`,
+    /// else the folder the path is in.
+    #[serde(default)]
+    pub idle_days: Option<u32>,
     /// Only paths no other rule found: a general rule that picks up what the specific ones miss.
     #[serde(default)]
     pub catch_all: bool,
@@ -100,6 +116,20 @@ pub struct Rule {
 
 fn yes() -> bool {
     true
+}
+
+/// A string or a list of strings.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
 }
 
 impl Rule {
@@ -379,10 +409,23 @@ pub fn wildcard(pattern: &str, text: &str) -> bool {
 
 /// Expand env vars and wildcards into the existing paths a rule pattern refers to.
 /// A first segment of `*:` means every fixed drive. Wildcard segments never descend through symlinks or junctions.
+/// `base\**\name` finds folders called `name` at any depth under `base` (see `deep_search`).
 pub fn resolve(pattern: &str) -> Vec<PathBuf> {
     let expanded = expand_env(pattern);
     if expanded.contains('%') {
         return Vec::new();
+    }
+    if expanded.contains("**") {
+        let Some((base, name)) = split_deep(&expanded) else { return Vec::new() };
+        let key = expanded.to_lowercase();
+        if let Some(hit) = DEEP.lock().ok().and_then(|c| c.get(&key).cloned()) {
+            return hit;
+        }
+        let found = deep_search(base, &[name.to_string()]).remove(0);
+        if let Ok(mut c) = DEEP.lock() {
+            c.insert(key, found.clone());
+        }
+        return found;
     }
     let mut segs = expanded.split('\\').filter(|s| !s.is_empty());
     let Some(first) = segs.next() else { return Vec::new() };
@@ -413,6 +456,168 @@ pub fn resolve(pattern: &str) -> Vec<PathBuf> {
     current.sort();
     current.dedup();
     current
+}
+
+// ---------------------------------------------------------------- deep search ('**')
+
+/// Folders directly under a drive root that a deep search never enters: Windows, installed programs, the recycle bin.
+const ROOT_SKIP: &[&str] = &["Windows", "Program Files", "Program Files (x86)", "ProgramData", "$Recycle.Bin", "System Volume Information"];
+
+/// Results of `base\**\name` patterns, keyed by the expanded pattern in lowercase. Filled by `prewalk`.
+static DEEP: std::sync::Mutex<std::collections::BTreeMap<String, Vec<PathBuf>>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// `base\**\name` -> (base, name). Only this form is supported: `**` once, followed by a single name.
+fn split_deep(expanded: &str) -> Option<(&str, &str)> {
+    let (base, name) = expanded.split_once(r"\**\")?;
+    (!base.contains("**") && !name.is_empty() && !name.contains('\\') && !name.contains("**")).then_some((base, name))
+}
+
+/// Folders matching each of `names` at any depth under `base`, in one walk. Never through links, `.git`,
+/// cloud-synced folders or the ROOT_SKIP folders. A match is not searched again for its own name
+/// (no node_modules inside node_modules), but is for the other names.
+pub fn deep_search(base: &str, names: &[String]) -> Vec<Vec<PathBuf>> {
+    let cloud = safety::Guard::detect().cloud_roots;
+    let out = std::sync::Mutex::new(vec![Vec::new(); names.len()]);
+    let all: Vec<usize> = (0..names.len()).collect();
+    resolve(base).par_iter().for_each(|b| deep_walk(b, names, &all, &cloud, &out));
+    let mut out = out.into_inner().unwrap_or_default();
+    for v in &mut out {
+        v.sort();
+        v.dedup();
+    }
+    out
+}
+
+fn deep_walk(dir: &Path, names: &[String], active: &[usize], cloud: &[PathBuf], out: &std::sync::Mutex<Vec<Vec<PathBuf>>>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let at_root = dir.parent().is_none();
+    let mut subdirs = Vec::new();
+    for e in rd.flatten() {
+        let (Ok(md), Ok(ft)) = (e.metadata(), e.file_type()) else { continue };
+        if !md.is_dir() || is_link(md.file_attributes(), &ft) {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.eq_ignore_ascii_case(".git") || (at_root && ROOT_SKIP.iter().any(|s| s.eq_ignore_ascii_case(&name))) {
+            continue;
+        }
+        let path = e.path();
+        if cloud.iter().any(|c| crate::scan::strip_prefix_ci(&path, c).is_some()) {
+            continue;
+        }
+        let hits: Vec<usize> = active.iter().copied().filter(|&i| wildcard(&names[i], &name)).collect();
+        if !hits.is_empty() {
+            if let Ok(mut o) = out.lock() {
+                for &i in &hits {
+                    o[i].push(path.clone());
+                }
+            }
+        }
+        let rest: Vec<usize> = active.iter().copied().filter(|i| !hits.contains(i)).collect();
+        if !rest.is_empty() {
+            subdirs.push((path, rest));
+        }
+    }
+    subdirs.par_iter().for_each(|(p, rest)| deep_walk(p, names, rest, cloud, out));
+}
+
+/// Run every `**` pattern of `rules` in one walk per base folder, so `resolve` finds them ready.
+pub fn prewalk(rules: &[Rule]) {
+    let mut by_base: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for p in rules.iter().flat_map(|r| &r.paths) {
+        let expanded = expand_env(p);
+        if expanded.contains('%') {
+            continue;
+        }
+        if let Some((base, name)) = split_deep(&expanded) {
+            let names = by_base.entry(base.to_string()).or_default();
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    let mut cache = std::collections::BTreeMap::new();
+    for (base, names) in by_base {
+        for (name, found) in names.iter().zip(deep_search(&base, &names)) {
+            cache.insert(format!(r"{base}\**\{name}").to_lowercase(), found);
+        }
+    }
+    if let Ok(mut c) = DEEP.lock() {
+        *c = cache;
+    }
+}
+
+// ---------------------------------------------------------------- project checks
+
+/// The git work tree `p` is in: the nearest folder above it that holds `.git`.
+fn repo_root(p: &Path) -> Option<PathBuf> {
+    p.ancestors().skip(1).find(|a| a.join(".git").exists()).map(Path::to_path_buf)
+}
+
+/// The git work tree `p` is in, when it is one of your projects: not a clone an app keeps in AppData
+/// or in a dot folder of your profile (.claude, .vscode, .cache).
+fn project_repo(p: &Path) -> Option<PathBuf> {
+    let repo = repo_root(p)?;
+    let in_appdata = ["LOCALAPPDATA", "APPDATA"].iter().filter_map(std::env::var_os).any(|d| crate::scan::strip_prefix_ci(&repo, Path::new(&d)).is_some());
+    let in_dot_folder = std::env::var_os("USERPROFILE")
+        .and_then(|home| crate::scan::strip_prefix_ci(&repo, Path::new(&home)))
+        .is_some_and(|rel| rel.components().next().is_some_and(|c| c.as_os_str().to_string_lossy().starts_with('.')));
+    (!in_appdata && !in_dot_folder).then_some(repo)
+}
+
+/// Every path git tracks in `repo`, lowercase with `\`, sorted. None when git could not say.
+fn tracked_files(repo: &Path) -> Option<Vec<String>> {
+    let out = crate::sys::output_hidden("git", &["-C", &repo.display().to_string(), "ls-files", "-z"])?;
+    let mut v: Vec<String> = out.split('\0').filter(|s| !s.is_empty()).map(|s| s.replace('/', "\\").to_lowercase()).collect();
+    v.sort();
+    Some(v)
+}
+
+/// True when git tracks any file under `rel` (relative to the repo, as from `tracked_files`).
+fn tracks_under(tracked: &[String], rel: &Path) -> bool {
+    let prefix = format!("{}\\", rel.display().to_string().to_lowercase());
+    let i = tracked.partition_point(|s| s.as_str() < prefix.as_str());
+    tracked.get(i).is_some_and(|s| s.starts_with(&prefix))
+}
+
+/// How many entries `idle` looks at before it gives up and calls the project in use.
+const IDLE_LIMIT: usize = 20_000;
+
+/// True when nothing in `project` changed after `cutoff`, leaving out `.git` and every folder called `skip`
+/// (the folders being judged: in a monorepo, each package has its own node_modules).
+fn idle(project: &Path, skip: &str, cutoff: i64) -> bool {
+    let mut stack = vec![project.to_path_buf()];
+    let mut seen = 0;
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > IDLE_LIMIT {
+                return false;
+            }
+            let (Ok(md), Ok(ft)) = (e.metadata(), e.file_type()) else { continue };
+            if is_link(md.file_attributes(), &ft) {
+                continue;
+            }
+            let name = e.file_name();
+            if name.eq_ignore_ascii_case(".git") || name.eq_ignore_ascii_case(skip) {
+                continue;
+            }
+            if unix_secs(&md) > cutoff {
+                return false;
+            }
+            if md.is_dir() {
+                stack.push(e.path());
+            }
+        }
+    }
+    true
+}
+
+/// True when `dir` holds only files matching one of `patterns`, and no folders.
+fn holds_only(dir: &Path, patterns: &[String]) -> bool {
+    let Ok(rd) = fs::read_dir(dir) else { return false };
+    rd.flatten().all(|e| e.file_type().is_ok_and(|t| t.is_file()) && patterns.iter().any(|p| wildcard(p, &e.file_name().to_string_lossy())))
 }
 
 // ---------------------------------------------------------------- measuring
@@ -604,13 +809,23 @@ pub fn evaluate(rule: &Rule, env: &Env) -> RuleResult {
 
 /// Evaluate `rule`, leaving out paths that overlap `taken` (paths other rules already found).
 fn evaluate_except(rule: &Rule, env: &Env, taken: &[PathBuf]) -> RuleResult {
-    let overlaps = |p: &Path| taken.iter().any(|t| crate::scan::strip_prefix_ci(p, t).is_some() || crate::scan::strip_prefix_ci(t, p).is_some());
+    // Lowercased once: a `**` rule can find tens of thousands of folders.
+    let taken: Vec<String> = taken.iter().map(|t| t.to_string_lossy().to_lowercase().trim_end_matches('\\').to_string()).collect();
+    let inside = |p: &str, b: &str| p.strip_prefix(b).is_some_and(|r| r.is_empty() || r.starts_with('\\'));
+    let overlaps = |p: &Path| {
+        let p = p.to_string_lossy().to_lowercase();
+        let p = p.trim_end_matches('\\');
+        taken.iter().any(|t| inside(p, t) || inside(t, p))
+    };
     let mut dismissed_paths = Vec::new();
     let mut found: Vec<PathBuf> = rule
         .paths
         .iter()
         .flat_map(|p| resolve(p))
-        .filter(|p| rule.beside.as_ref().is_none_or(|b| p.parent().is_some_and(|d| d.join(b).exists())))
+        .filter(|p| rule.beside.is_empty() || p.parent().is_some_and(|d| rule.beside.iter().any(|b| d.join(b).exists())))
+        .filter(|p| rule.contains.as_ref().is_none_or(|c| p.join(c).exists()))
+        .filter(|p| rule.only.is_empty() || holds_only(p, &rule.only))
+        .filter(|p| !rule.in_repo || project_repo(p).is_some())
         .filter(|p| !overlaps(p))
         .filter(|p| {
             let d = env.dismissed.has_path(p);
@@ -623,10 +838,38 @@ fn evaluate_except(rule: &Rule, env: &Env, taken: &[PathBuf]) -> RuleResult {
     // A tool may report a folder a pattern already found, or one inside it (pnpm's store\v3): count it once.
     found.sort_by_key(|p| p.to_string_lossy().to_lowercase());
     let mut unique: Vec<PathBuf> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for p in found {
-        if !unique.iter().any(|u| crate::scan::strip_prefix_ci(&p, u).is_some()) {
+        if !p.ancestors().any(|a| seen.contains(&a.to_string_lossy().to_lowercase())) {
+            seen.insert(p.to_string_lossy().to_lowercase());
             unique.push(p);
         }
+    }
+    // The slower project checks, on what is left.
+    let mut refused = Vec::new();
+    if rule.untracked || rule.idle_days.is_some() {
+        let idle_cutoff = rule.idle_days.map(|d| now_secs() - d as i64 * 86_400);
+        let mut repos: std::collections::HashMap<PathBuf, Option<Vec<String>>> = Default::default();
+        let mut idle_projects: std::collections::HashMap<(PathBuf, String), bool> = Default::default();
+        unique.retain(|p| {
+            if rule.untracked {
+                if let Some(repo) = repo_root(p) {
+                    let tracked = repos.entry(repo.clone()).or_insert_with(|| tracked_files(&repo));
+                    let Some(tracked) = tracked else {
+                        refused.push((p.clone(), "git could not say whether it tracks this folder".to_string()));
+                        return false;
+                    };
+                    if p.strip_prefix(&repo).is_ok_and(|rel| tracks_under(tracked, rel)) {
+                        return false;
+                    }
+                }
+            }
+            // In a repo the whole repo must be idle, so a monorepo's packages go together.
+            let Some(c) = idle_cutoff else { return true };
+            let project = if rule.in_repo { project_repo(p) } else { p.parent().map(Path::to_path_buf) };
+            let (Some(project), Some(name)) = (project, p.file_name().map(|n| n.to_string_lossy().into_owned())) else { return false };
+            *idle_projects.entry((project.clone(), name.to_lowercase())).or_insert_with(|| idle(&project, &name, c))
+        });
     }
     let found = unique;
     let cutoff = rule.cutoff();
@@ -638,7 +881,7 @@ fn evaluate_except(rule: &Rule, env: &Env, taken: &[PathBuf]) -> RuleResult {
         files: 0,
         blocked_by: Vec::new(),
         needs_admin: rule.admin && !env.is_admin,
-        refused: Vec::new(),
+        refused,
         dismissed: env.dismissed.has_rule(&rule.id),
         dismissed_paths,
         tool_found: rule.use_command && rule.command.as_deref().is_some_and(|c| crate::sys::on_path(crate::sys::program_of(c))),
@@ -765,7 +1008,8 @@ fn evaluate_except(rule: &Rule, env: &Env, taken: &[PathBuf]) -> RuleResult {
 /// Evaluate all rules in parallel, largest result first.
 pub fn evaluate_all(rules: &[Rule], env: &Env) -> Vec<RuleResult> {
     let (general, specific): (Vec<&Rule>, Vec<&Rule>) = rules.iter().partition(|r| r.catch_all);
-    let mut out: Vec<RuleResult> = specific.par_iter().map(|r| evaluate(r, env)).collect();
+    // The `**` searches walk whole drives: run them alongside the specific rules.
+    let (mut out, ()) = rayon::join(|| specific.par_iter().map(|r| evaluate(r, env)).collect::<Vec<RuleResult>>(), || prewalk(rules));
     let mut taken: Vec<PathBuf> = out.iter().flat_map(|r| r.found.iter().chain(&r.dismissed_paths).cloned()).collect();
     // A built-in rule the user turned off still owns its folders: the catch-all must not take them instead.
     let builtin = toml::from_str::<RuleFile>(DEFAULT_RULES).map(|f| f.rule).unwrap_or_default();
@@ -834,7 +1078,7 @@ mod tests {
         }
         let r = root.display().to_string();
         let mut general = test_rule("general", &[&format!(r"{r}\*\Cache")]);
-        general.beside = Some("GPUCache".into());
+        general.beside = vec!["GPUCache".into()];
         general.catch_all = true;
         let specific = test_rule("specific", &[&format!(r"{r}\Claimed")]);
         let results = evaluate_all(&[general, specific], &Env::detect());
@@ -865,5 +1109,70 @@ mod tests {
         let found = evaluate(&rule, &Env::detect()).found;
         let _ = fs::remove_dir_all(&root);
         assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn deep_search_finds_names_at_any_depth() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("linttrap-test-deep-{}", std::process::id()));
+        for d in [r"a\node_modules\x\node_modules", r"a\node_modules\pkg\__pycache__", r"b\c\__pycache__", r".git\__pycache__"] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let r = root.display().to_string();
+        let found = deep_search(&r, &["node_modules".into(), "__pycache__".into()]);
+        let _ = fs::remove_dir_all(&root);
+        // Not node_modules inside node_modules, but __pycache__ inside it; never inside .git.
+        assert_eq!(found[0], vec![root.join(r"a\node_modules")]);
+        assert_eq!(found[1], vec![root.join(r"a\node_modules\pkg\__pycache__"), root.join(r"b\c\__pycache__")]);
+        assert!(resolve(&format!(r"{r}\**\a\b")).is_empty(), "only a single name may follow **");
+    }
+
+    #[test]
+    fn pycache_rule_skips_mixed_and_git_tracked_folders() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("linttrap-test-pyc-{}", std::process::id()));
+        for (f, body) in [(r"plain\__pycache__\a.pyc", "x"), (r"mixed\__pycache__\a.pyc", "x"), (r"mixed\__pycache__\notes.txt", "x"),
+                          (r"repo\__pycache__\b.pyc", "x"), (r"repo\sub\__pycache__\c.pyc", "x")] {
+            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+            fs::write(root.join(f), body).unwrap();
+        }
+        let git = |args: &[&str]| crate::sys::output_hidden("git", &[&["-C", &root.join("repo").display().to_string()], args].concat()).is_some();
+        let have_git = git(&["init", "-q"]) && git(&["add", "-f", r"__pycache__/b.pyc"]) && git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "t"]);
+        let mut rule = test_rule("pyc", &[&format!(r"{}\**\__pycache__", root.display())]);
+        rule.action = Action::Whole;
+        rule.only = vec!["*.pyc".into()];
+        rule.untracked = true;
+        let mut found = evaluate(&rule, &Env::detect()).found;
+        let _ = fs::remove_dir_all(&root);
+        found.sort();
+        let mut want = vec![root.join(r"plain\__pycache__"), root.join(r"repo\sub\__pycache__")];
+        if !have_git {
+            want.push(root.join(r"repo\__pycache__"));
+        }
+        want.sort();
+        assert_eq!(found, want);
+    }
+
+    #[test]
+    fn idle_ignores_the_skipped_folder() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join(format!("linttrap-test-idle-{}", std::process::id()));
+        fs::create_dir_all(root.join(r"node_modules\x")).unwrap();
+        fs::create_dir_all(root.join(r"pkg\node_modules\y")).unwrap();
+        fs::write(root.join("package.json"), "{}").unwrap();
+        let later = now_secs() + 3600;
+        let earlier = now_secs() - 3600;
+        let (all_old, all_new) = (idle(&root, "node_modules", later), idle(&root, "node_modules", earlier));
+        // Inside `pkg` there is only its node_modules, which does not count.
+        let only_skip_new = idle(&root.join("pkg"), "node_modules", earlier);
+        let _ = fs::remove_dir_all(&root);
+        assert!(all_old);
+        assert!(!all_new);
+        assert!(only_skip_new, "changes inside the skipped folder do not count");
+    }
+
+    #[test]
+    fn beside_takes_one_name_or_a_list() {
+        let one = parse_rules("[[rule]]\nid='a'\ntitle='t'\nsafety='review'\naction='none'\npaths=[]\nbeside='x'\n").unwrap();
+        let many = parse_rules("[[rule]]\nid='a'\ntitle='t'\nsafety='review'\naction='none'\npaths=[]\nbeside=['x','y']\n").unwrap();
+        assert_eq!(one[0].beside, vec!["x"]);
+        assert_eq!(many[0].beside, vec!["x", "y"]);
     }
 }

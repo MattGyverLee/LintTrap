@@ -164,6 +164,8 @@ struct App {
     current: u32,
     cache: Option<(u32, Rect, Vec<Cell>)>,
     marks: HashMap<u32, Safety>,
+    /// For each marked node, the index in `results` of the first rule that flags it.
+    mark_rule: HashMap<u32, usize>,
     context_node: Option<u32>,
     flash: Option<(u32, f64)>,
 
@@ -208,6 +210,7 @@ impl App {
             current: 0,
             cache: None,
             marks: HashMap::new(),
+            mark_rule: HashMap::new(),
             context_node: None,
             flash: None,
             rules_job: None,
@@ -330,8 +333,9 @@ impl App {
     /// Which tree nodes to tint, from the current rule results.
     fn rebuild_marks(&mut self) {
         self.marks.clear();
+        self.mark_rule.clear();
         let Some(t) = &self.tree else { return };
-        for r in &self.results {
+        for (i, r) in self.results.iter().enumerate() {
             if r.dismissed {
                 continue;
             }
@@ -340,6 +344,7 @@ impl App {
                 if let Some(idx) = t.find(p) {
                     if idx != 0 {
                         self.marks.insert(idx, r.rule.safety);
+                        self.mark_rule.entry(idx).or_insert(i);
                     }
                 }
             }
@@ -349,7 +354,8 @@ impl App {
     fn on_scanned_drive(&self, r: &RuleResult) -> bool {
         let Some(t) = &self.tree else { return true };
         let root = t.root_path.to_string_lossy().to_lowercase();
-        r.found.iter().chain(r.dismissed_paths.iter()).any(|p| p.to_string_lossy().to_lowercase().starts_with(&root))
+        // No allocation per path: a `**` rule can have tens of thousands.
+        r.found.iter().chain(r.dismissed_paths.iter()).any(|p| p.to_string_lossy().get(..root.len()).is_some_and(|s| s.eq_ignore_ascii_case(&root)))
     }
 
     /// Results to list: cleanable kinds first (Safe, Review), then Move, then Leave alone; largest first within each.
@@ -700,14 +706,16 @@ impl App {
                     actions.push(UiAction::DismissRule(r.rule.id.clone()));
                 }
             });
+            // A `**` rule can find tens of thousands of folders: only the first 200 are listed.
+            let count = if r.candidates.is_empty() { r.found.len() } else { r.candidates.len() };
             let detail: Vec<(PathBuf, u64, Option<String>)> = if !r.candidates.is_empty() {
-                r.candidates.iter().map(|c| (c.path.clone(), c.bytes, c.label.clone())).collect()
+                r.candidates.iter().take(200).map(|c| (c.path.clone(), c.bytes, c.label.clone())).collect()
             } else {
-                r.found.iter().map(|f| (f.clone(), 0, None)).collect()
+                r.found.iter().take(200).map(|f| (f.clone(), 0, None)).collect()
             };
-            if detail.len() > 1 || !r.refused.is_empty() {
-                egui::CollapsingHeader::new(RichText::new(format!("{} items", detail.len())).small()).id_salt(("items", &r.rule.id)).show(ui, |ui| {
-                    for (path, bytes, label) in detail.iter().take(200) {
+            if count > 1 || !r.refused.is_empty() {
+                egui::CollapsingHeader::new(RichText::new(format!("{count} items")).small()).id_salt(("items", &r.rule.id)).show(ui, |ui| {
+                    for (path, bytes, label) in &detail {
                         ui.horizontal(|ui| {
                             if *bytes > 0 {
                                 ui.label(RichText::new(format!("{:>9}", human(*bytes))).monospace().small());
@@ -719,10 +727,10 @@ impl App {
                             }
                         });
                     }
-                    if detail.len() > 200 {
-                        ui.label(RichText::new(format!("... and {} more", detail.len() - 200)).small());
+                    if count > 200 {
+                        ui.label(RichText::new(format!("... and {} more", count - 200)).small());
                     }
-                    for (path, why) in &r.refused {
+                    for (path, why) in r.refused.iter().take(200) {
                         ui.label(RichText::new(format!("[SKIP] {}: {why}", path.display())).small().color(p.weak));
                     }
                 });
@@ -839,9 +847,7 @@ impl App {
             let path = tree.path_of(c.node);
             let parent_size = tree.nodes[n.parent as usize].size.max(1);
             let mark = cell_mark[hi];
-            let flagged = self.marks.contains_key(&c.node).then(|| {
-                self.results.iter().find(|r| !r.dismissed && r.found.iter().chain(r.candidates.iter().map(|c| &c.path)).any(|f| tree.find(f) == Some(c.node)))
-            }).flatten();
+            let flagged = self.mark_rule.get(&c.node).and_then(|&i| self.results.get(i));
             // Anchor below the whole cursor, not its tip, so the arrow doesn't cover the folder name.
             let pointer = resp.hover_pos().unwrap_or(c.rect.center());
             let mut tip = egui::Tooltip::for_enabled(&resp);

@@ -19,7 +19,9 @@
 #                          the driver store, for display)
 #               none     = report only
 #   paths       Windows paths; %ENV% variables are expanded and a segment may contain * or ? wildcards.
-#               A path starting with *: is looked for on every fixed drive ('*:\temp')
+#               A path starting with *: is looked for on every fixed drive ('*:\temp').
+#               'base\**\name' finds folders called name at any depth under base ('*:\**\node_modules');
+#               it never enters Windows, Program Files, ProgramData, .git or cloud-synced folders
 #   min_age_days  only delete files last modified more than this many days ago
 #   keep        (versions) how many of the newest versions to keep. Default 1.
 #   prefix      (versions) only consider folders whose name starts with this, e.g. "app-"
@@ -32,8 +34,15 @@
 #   per_path    run `command` once inside each found path (for tools that pick their folder by drive)
 #   prevent     how to stop it coming back
 #   note        one line of advice
-#   beside      only paths whose folder also holds an entry with this name (e.g. GPUCache, which marks a
-#               Chromium profile, so a plain "Cache" folder of some other program is not taken)
+#   beside      only paths whose folder also holds an entry with this name, or one of a list (e.g. GPUCache,
+#               which marks a Chromium profile, so a plain "Cache" folder of some other program is not taken)
+#   contains    only paths that themselves hold an entry with this name (pyvenv.cfg marks a Python venv)
+#   only        only folders holding nothing but files matching these patterns, e.g. ["*.pyc"]
+#   in_repo     only paths inside a git work tree outside AppData and the profile's dot folders: your
+#               project, not an app's clone
+#   untracked   leave out paths git tracks files in
+#   idle_days   only paths whose project has had nothing changed for this many days. The project is the
+#               whole repo with in_repo, else the folder the path is in
 #   catch_all   only paths no other rule found: a general rule for what the specific ones miss
 #   locate      a command that prints where the tool keeps this folder (e.g. "uv cache dir"). Asked on the
 #               first run; the answers are saved in %APPDATA%\LintTrap\locations.toml and added to `paths`
@@ -619,3 +628,53 @@ paths = ['%USERPROFILE%\anaconda3\pkgs', '%USERPROFILE%\miniconda3\pkgs', '%USER
 locate = "conda config --show pkgs_dirs"
 command = "conda clean --all -y"
 use_command = true
+
+# ---------------------------------------------------------------- developer folders (searched at any depth)
+
+[[rule]]
+id = "python-bytecode"
+title = "Python bytecode (__pycache__ folders)"
+safety = "review"
+action = "whole"
+paths = ['*:\**\__pycache__']
+only = ["*.pyc", "*.pyo"]
+untracked = true
+catch_all = true
+prevent = 'setx PYTHONPYCACHEPREFIX %MOVE_TO%\Caches\pycache'
+note = "Python rebuilds these on the next import, so they come back. With PYTHONPYCACHEPREFIX set, Python keeps them all in one folder and these are no longer used."
+
+[[rule]]
+id = "python-pycache-prefix"
+title = "Python bytecode cache (PYTHONPYCACHEPREFIX)"
+safety = "safe"
+action = "contents"
+paths = ['%PYTHONPYCACHEPREFIX%']
+note = "Python rebuilds these on the next import."
+
+[[rule]]
+id = "node-modules-idle"
+title = "node_modules of projects untouched for 90 days"
+safety = "review"
+action = "whole"
+paths = ['*:\**\node_modules']
+beside = "package.json"
+in_repo = true
+untracked = true
+idle_days = 90
+catch_all = true
+note = "Run npm install (or pnpm / yarn install) in the project to get them back. With pnpm, most of the space is shared with the store and stays until pnpm store prune."
+
+[[rule]]
+id = "python-venvs-idle"
+title = "Python venvs of projects untouched for 90 days"
+safety = "review"
+action = "whole"
+paths = ['*:\**\.venv', '*:\**\venv']
+contains = "pyvenv.cfg"
+beside = ["pyproject.toml", "requirements.txt", "uv.lock", "Pipfile", "setup.py"]
+in_repo = true
+untracked = true
+idle_days = 90
+catch_all = true
+note = "Recreate it with uv sync, or python -m venv .venv and pip install -r requirements.txt."
+
