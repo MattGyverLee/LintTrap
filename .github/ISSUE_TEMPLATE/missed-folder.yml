@@ -1,0 +1,25 @@
+name: Report a folder LintTrap misses
+description: A big folder no rule covers, when you don't have a rule for it yet.
+title: "Missed: "
+labels: ["missed-folder"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If you can, write and test a rule first (see "Teaching LintTrap with Claude" in the README) and use the
+        *Suggest a cleanup rule* form instead. Otherwise, describe the folder here.
+
+        Read what you paste below: folder names show which programs are on your PC.
+  - type: textarea
+    id: unknown
+    attributes:
+      label: The folder, from `linttrap-cli unknown`
+      description: The entry for the folder (size, file types, ages, subfolders). Or the path with `%LOCALAPPDATA%`-style variables and its size.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: owner
+    attributes:
+      label: What you think owns it
+      description: The program, if you know, and whether it rebuilds the folder on its own.

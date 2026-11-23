@@ -7,6 +7,7 @@ use linttrap::locate::Locations;
 use linttrap::rules::{self, Action, Dismissed, RuleResult, Safety};
 use linttrap::safety::Guard;
 use linttrap::scan::{self, human, Kind, Progress, Tree};
+use linttrap::suggest;
 use linttrap::sys;
 use linttrap::treemap::{self, Cell, HEADER};
 use eframe::egui::{self, Align, Align2, Color32, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -153,6 +154,16 @@ enum UiAction {
     AskRun(String),
     /// Describe this folder as a question for Claude.
     AskClaude(PathBuf),
+    /// Show what suggesting this user rule for the built-in list would send.
+    Suggest(String),
+}
+
+/// One of the user's rules, ready to send back as a GitHub issue.
+struct Suggestion {
+    title: String,
+    text: String,
+    problems: Vec<String>,
+    url: String,
 }
 
 struct App {
@@ -190,8 +201,12 @@ struct App {
     last_clean: Option<String>,
     map_stale: bool,
     /// The question for Claude about a folder: being written, then shown until closed.
-    ask_job: Option<JoinHandle<String>>,
-    ask_text: Option<String>,
+    /// Each holds the question and the GitHub issue URL that reports the folder instead.
+    ask_job: Option<JoinHandle<(String, String)>>,
+    ask_text: Option<(String, String)>,
+    /// Ids of the built-in rules: the user's other rules can be suggested for the built-in list.
+    builtin: HashSet<String>,
+    suggestion: Option<Suggestion>,
 }
 
 impl App {
@@ -231,6 +246,8 @@ impl App {
             map_stale: false,
             ask_job: None,
             ask_text: None,
+            builtin: rules::builtin_ids().into_iter().collect(),
+            suggestion: None,
         };
         app.start_scan(PathBuf::from(start), ctx);
         app.start_rules(ctx);
@@ -399,9 +416,11 @@ impl App {
                 let ctx2 = ctx.clone();
                 self.ask_text = None;
                 self.ask_job = Some(std::thread::spawn(move || {
-                    let text = ask::prompt(&[ask::profile(&p, &[])]);
+                    let profile = ask::profile(&p, &[]);
+                    let text = ask::prompt(std::slice::from_ref(&profile));
+                    let url = suggest::missed_folder_url(&p, &ask::describe(&profile));
                     ctx2.request_repaint();
-                    text
+                    (text, url)
                 }));
             }
             UiAction::DismissRule(id) => {
@@ -426,6 +445,28 @@ impl App {
                 changed = true;
             }
             UiAction::AskRun(id) => self.confirm_run = Some(id),
+            UiAction::Suggest(id) => {
+                let Some(r) = self.results.iter().find(|r| r.rule.id == id) else { return };
+                self.suggestion = Some(match suggest::user_rule_toml(&id) {
+                    Some(toml) => {
+                        let paths = rules::parse_rules(&toml).ok().and_then(|v| v.into_iter().next()).map(|r| r.paths).unwrap_or_default();
+                        let check = suggest::check_summary(r);
+                        Suggestion {
+                            title: r.rule.title.clone(),
+                            text: format!("{}
+{check}", toml.trim()),
+                            problems: suggest::problems(&paths, r),
+                            url: suggest::rule_issue_url(&toml, r),
+                        }
+                    }
+                    None => Suggestion {
+                        title: r.rule.title.clone(),
+                        text: String::new(),
+                        problems: vec![format!("The rule could not be read from {}.", rules::user_rules_path().display())],
+                        url: String::new(),
+                    },
+                });
+            }
         }
         if changed {
             let _ = self.dismissed.save();
@@ -704,6 +745,9 @@ impl App {
                 }
                 if ui.small_button("Dismiss").on_hover_text("Stop flagging this rule. Undo it under Dismissed.").clicked() {
                     actions.push(UiAction::DismissRule(r.rule.id.clone()));
+                }
+                if !self.builtin.contains(&r.rule.id) && ui.small_button("Suggest for LintTrap").on_hover_text("Your own rule: send it back for the built-in list (shows what is sent first)").clicked() {
+                    actions.push(UiAction::Suggest(r.rule.id.clone()));
                 }
             });
             // A `**` rule can find tens of thousands of folders: only the first 200 are listed.
@@ -1010,7 +1054,7 @@ impl App {
         let modal = egui::Modal::new(Id::unique("ask-claude")).show(ctx, |ui| {
             ui.set_width(640.0);
             ui.label(RichText::new("Ask Claude about this folder").size(18.0).strong());
-            let Some(text) = &self.ask_text else {
+            let Some((text, url)) = &self.ask_text else {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label("Looking through the folder ...");
@@ -1030,6 +1074,10 @@ impl App {
                     ui.ctx().copy_text(text.clone());
                     close = true;
                 }
+                if ui.button("Report on GitHub").on_hover_text("No rule yet? Opens a LintTrap issue in your browser with the folder's description filled in, for you to read and submit").clicked() {
+                    sys::open_url(url);
+                    close = true;
+                }
                 if ui.button("Close").clicked() {
                     close = true;
                 }
@@ -1039,6 +1087,41 @@ impl App {
             // A walk still running finishes in the background; its result is dropped.
             self.ask_job = None;
             self.ask_text = None;
+        }
+    }
+
+    /// One of the user's rules as it would be sent back for the built-in list, shown in full before the browser opens.
+    fn suggest_dialog(&mut self, ctx: &egui::Context) {
+        let Some(s) = &self.suggestion else { return };
+        let mut close = false;
+        let modal = egui::Modal::new(Id::unique("suggest-rule")).show(ctx, |ui| {
+            ui.set_width(640.0);
+            let warn = safety_colors(Safety::Review, ui.visuals().dark_mode).0;
+            ui.label(RichText::new(format!("Suggest \"{}\" for LintTrap", s.title)).size(18.0).strong());
+            ui.label("This opens a new issue on GitHub in your browser, filled in with the text below. Nothing is sent until you submit it there (a GitHub account is needed). Read it first: folder names show which programs are on this PC.");
+            for p in &s.problems {
+                ui.label(RichText::new(format!("[WARN] {p}")).color(warn));
+            }
+            if !s.text.is_empty() {
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut s.text.as_str()).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+                });
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let ready = s.problems.is_empty() && !s.url.is_empty();
+                if ui.add_enabled(ready, egui::Button::new(RichText::new("Open on GitHub").strong())).on_disabled_hover_text("Fix the warnings above in your rules.toml first").clicked() {
+                    sys::open_url(&s.url);
+                    close = true;
+                }
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if modal.should_close() || close {
+            self.suggestion = None;
         }
     }
 
@@ -1118,5 +1201,6 @@ impl eframe::App for App {
         self.confirm_dialog(&ctx);
         self.run_dialog(&ctx);
         self.ask_dialog(&ctx);
+        self.suggest_dialog(&ctx);
     }
 }

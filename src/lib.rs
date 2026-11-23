@@ -5,5 +5,6 @@ pub mod locate;
 pub mod rules;
 pub mod safety;
 pub mod scan;
+pub mod suggest;
 pub mod sys;
 pub mod treemap;

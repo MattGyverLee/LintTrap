@@ -1,0 +1,70 @@
+name: Suggest a cleanup rule
+description: A rule that works on your PC and should be in the built-in list.
+title: "Rule: "
+labels: ["rule"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sending a rule back. The built-in list only holds rules that are right on any PC, so the
+        more you can show about the folder and who owns it, the faster it goes in.
+
+        The rule format is the comment block at the top of
+        [`rules/default_rules.toml`](https://github.com/MattGyverLee/LintTrap/blob/main/rules/default_rules.toml).
+        Read what you paste below: folder names show which programs are on your PC.
+  - type: textarea
+    id: rule
+    attributes:
+      label: The rule
+      description: One or more `[[rule]]` blocks. Drop the `my-` prefix from the id.
+      render: toml
+      placeholder: |
+        [[rule]]
+        id = "example-cache"
+        title = "Example app cache"
+        safety = "safe"
+        action = "contents"
+        paths = ['%LOCALAPPDATA%\Example\Cache']
+        processes = ["Example.exe"]
+    validations:
+      required: true
+  - type: textarea
+    id: check
+    attributes:
+      label: Output of `linttrap-cli rules check FILE`
+      description: Shows what the rule matched on your PC, what Clean would free, and what the safety checks refused.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: owner
+    attributes:
+      label: What owns the folder, and how you know
+      description: The program, and the evidence (an .exe nearby, a manifest or README in the folder, the vendor's docs).
+    validations:
+      required: true
+  - type: dropdown
+    id: rebuilds
+    attributes:
+      label: What happens after the folder is cleaned?
+      options:
+        - The program rebuilds it and nothing is lost (safe)
+        - Probably junk, but something could be lost (review)
+        - It is real data that is just big (move)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: The program's own cleanup command, if it has one
+      placeholder: e.g. example cache clean
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: Paths use `%LOCALAPPDATA%`-style variables, not my user name or a path only my PC has.
+          required: true
+        - label: The folder holds no documents, settings, saved games, databases, mail, or synced files.
+          required: true

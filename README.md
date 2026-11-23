@@ -79,7 +79,12 @@ LintTrap only flags folders a rule knows about. For the rest, Claude can write t
    folders it matches here, what Clean would free, and what the safety checks refuse. It warns when a rule would
    replace a built-in one or finds folders but would clean nothing.
 4. **Keep.** `linttrap-cli rules check reply.md --add` appends them to your `rules.toml`; it refuses while
-   there are warnings. Rules that work well on other PCs are worth sending back for the built-in list.
+   there are warnings.
+5. **Send it back.** A rule that would work on any PC belongs in the built-in list. In the GUI, your own rules
+   have a *Suggest for LintTrap* button: it shows the rule and what it found here, then opens a filled-in
+   [*Suggest a cleanup rule*](https://github.com/MattGyverLee/LintTrap/issues/new?template=new-rule.yml) issue
+   in your browser for you to read and submit. A folder you have no rule for can be sent with *Report on GitHub*
+   in the *Ask Claude* window. Pull requests are welcome too; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 With Claude Code you can skip the copying: open it in this folder and ask it to teach LintTrap about your PC.
 `CLAUDE.md` tells it to run `unknown`, look inside the folders itself, check its rules with `rules check`, and ask

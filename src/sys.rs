@@ -113,6 +113,14 @@ pub fn relaunch_as_admin() -> bool {
     h as usize > 32
 }
 
+/// Open `url` in the default browser. True if it opened.
+pub fn open_url(url: &str) -> bool {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    let (verb, file) = (wide("open"), wide(url));
+    let h = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
+    h as usize > 32
+}
+
 /// The program a command line starts (its first word).
 pub fn program_of(command: &str) -> &str {
     command.split_whitespace().next().unwrap_or("")
